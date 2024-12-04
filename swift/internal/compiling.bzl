@@ -16,6 +16,7 @@
 
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@bazel_skylib//lib:sets.bzl", "sets")
+load("@bazel_skylib//lib:types.bzl", "types")
 load(
     "//swift:providers.bzl",
     "SwiftInfo",
@@ -66,13 +67,13 @@ load(
     "upcoming_and_experimental_features",
 )
 load(":module_maps.bzl", "write_module_map")
-load(
-    ":providers.bzl",
-    "create_clang_module",
-    "create_module",
-    "create_swift_info",
-    "create_swift_module",
-)
+
+# load(
+#     ":providers.bzl",
+#     "create_module",
+#     "create_swift_info",
+#     "create_swift_module",
+# )
 load(":target_triples.bzl", "target_triples")
 load(
     ":utils.bzl",
