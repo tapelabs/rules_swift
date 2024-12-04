@@ -106,6 +106,7 @@ def _swift_compiler_plugin_impl(ctx):
         swift_toolchain = swift_toolchain,
         target_name = ctx.label.name,
         workspace_name = ctx.workspace_name,
+        minimum_os_version = ctx.attr.minimum_os_version,
     )
     module_context = compile_result.module_context
     module_contexts.append(module_context)

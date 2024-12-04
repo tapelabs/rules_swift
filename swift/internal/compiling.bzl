@@ -67,6 +67,14 @@ load(
 )
 load(":module_maps.bzl", "write_module_map")
 load(
+    ":providers.bzl",
+    "create_clang_module",
+    "create_module",
+    "create_swift_info",
+    "create_swift_module",
+)
+load(":target_triples.bzl", "target_triples")
+load(
     ":utils.bzl",
     "compact",
     "compilation_context_for_explicit_module_compilation",
@@ -80,6 +88,128 @@ load(":wmo.bzl", "find_num_threads_flag_value", "is_wmo_manually_requested")
 # VFS root where all .swiftmodule files will be placed when
 # SWIFT_FEATURE_VFSOVERLAY is enabled.
 _SWIFTMODULES_VFS_ROOT = "/__build_bazel_rules_swift/swiftmodules"
+
+def _module_name_safe(string):
+    """Returns a transformation of `string` that is safe for module names."""
+    result = ""
+    saw_non_identifier_char = False
+    for ch in string.elems():
+        if ch.isalnum() or ch == "_":
+            # If we're seeing an identifier character after a sequence of
+            # non-identifier characters, append an underscore and reset our
+            # tracking state before appending the identifier character.
+            if saw_non_identifier_char:
+                result += "_"
+                saw_non_identifier_char = False
+            result += ch
+        elif result:
+            # Only track this if `result` has content; this ensures that we
+            # (intentionally) drop leading non-identifier characters instead of
+            # adding a leading underscore.
+            saw_non_identifier_char = True
+
+    return result
+
+def _minimum_os_version_copts(minimum_os_version, swift_toolchain):
+    """Returns additional copts used to set the target deployment version."""
+    copts = []
+
+    if minimum_os_version:
+        cc_toolchain = swift_toolchain.cc_toolchain_info
+
+        target_triple = target_triples.normalize_for_swift(
+            target_triples.parse(cc_toolchain.target_gnu_system_name),
+        )
+
+        (os, version) = target_triples.split_os_version(target_triple.os)
+
+        if not version:
+            fail(
+                ("Could not extract the version number from the " +
+                 "target_triple.os: {}").format(target_triple.os),
+            )
+
+        # TODO: For now, hardcode the oldest supported deployment versions.
+        # These really should be extracted from the `MinimumDeploymentTarget`
+        # field of the SDK's `SDKSettings` file, but this information is not
+        # currently available during the analysis phase.
+        if minimum_os_version == "oldest":
+            if os == "macos":
+                version = "10.10"
+            elif os == "ios":
+                version = "12.0"
+            else:
+                fail(
+                    ("Determining oldest deployment version for '{}' is " +
+                     "unsupported").format(os),
+                )
+        else:
+            version = minimum_os_version
+
+        target_triple = target_triples.make(
+            cpu = target_triple.cpu,
+            vendor = target_triple.vendor,
+            os = "{}{}".format(os, version),
+            environment = target_triple.environment,
+        )
+
+        copts.extend([
+            "-target",
+            target_triples.str(target_triple),
+        ])
+
+    return copts
+
+def derive_module_name(*args):
+    """Returns a derived module name from the given build label.
+
+    For targets whose module name is not explicitly specified, the module name
+    is computed using the following algorithm:
+
+    *   The package and name components of the label are considered separately.
+        All _interior_ sequences of non-identifier characters (anything other
+        than `a-z`, `A-Z`, `0-9`, and `_`) are replaced by a single underscore
+        (`_`). Any leading or trailing non-identifier characters are dropped.
+    *   If the package component is non-empty after the above transformation,
+        it is joined with the transformed name component using an underscore.
+        Otherwise, the transformed name is used by itself.
+    *   If this would result in a string that begins with a digit (`0-9`), an
+        underscore is prepended to make it identifier-safe.
+
+    This mapping is intended to be fairly predictable, but not reversible.
+
+    Args:
+        *args: Either a single argument of type `Label`, or two arguments of
+            type `str` where the first argument is the package name and the
+            second argument is the target name.
+
+    Returns:
+        The module name derived from the label.
+    """
+    if (len(args) == 1 and
+        hasattr(args[0], "package") and
+        hasattr(args[0], "name")):
+        label = args[0]
+        package = label.package
+        name = label.name
+    elif (len(args) == 2 and
+          types.is_string(args[0]) and
+          types.is_string(args[1])):
+        package = args[0]
+        name = args[1]
+    else:
+        fail("derive_module_name may only be called with a single argument " +
+             "of type 'Label' or two arguments of type 'str'.")
+
+    package_part = _module_name_safe(package.lstrip("//"))
+    name_part = _module_name_safe(name)
+    if package_part:
+        module_name = package_part + "_" + name_part
+    else:
+        module_name = name_part
+    if module_name[0].isdigit():
+        module_name = "_" + module_name
+    return module_name
 
 def create_compilation_context(defines, srcs, transitive_modules):
     """Cretes a compilation context for a Swift target.
@@ -321,7 +451,8 @@ def compile(
         swift_infos,
         swift_toolchain,
         target_name,
-        workspace_name):
+        workspace_name,
+        minimum_os_version = None):
     """Compiles a Swift module.
 
     Args:
@@ -383,6 +514,10 @@ def compile(
         workspace_name: The name of the workspace for which the code is being
              compiled, which is used to determine unique file paths for some
              outputs.
+        minimum_os_version: Overrides the `-target` os version. Either an
+            explicit dotted version number or the string "oldest", which will
+            translate to the oldest supported deployment version for the current
+            SDK.
 
     Returns:
         A `struct` with the following fields:
@@ -476,6 +611,9 @@ def compile(
     transitive_modules = merged_swift_info.transitive_modules.to_list()
     for info in extra_swift_infos:
         transitive_modules.extend(info.transitive_modules.to_list())
+
+    # Override the target deployment version, if specified.
+    copts.extend(_minimum_os_version_copts(minimum_os_version, swift_toolchain))
 
     const_gather_protocols_file = swift_toolchain.const_protocols_to_gather
 

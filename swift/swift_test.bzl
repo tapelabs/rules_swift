@@ -267,6 +267,7 @@ def _do_compile(
         swift_toolchain = swift_toolchain,
         target_name = name,
         workspace_name = workspace_name,
+        minimum_os_version = ctx.attr.minimum_os_version,
     )
 
 def _swift_test_impl(ctx):
